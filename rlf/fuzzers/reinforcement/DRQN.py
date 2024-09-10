@@ -111,10 +111,10 @@ class Net(nn.Module):
 
 class DRQN():
     """docstring for DQN"""
-    def __init__(self, state_dim, action_dim, max_epi_num=50, max_eps_len=100):
+    def __init__(self, state_dim, action_dim, max_epi_num=50, max_eps_len=100, is_regression=False):
         super(DRQN, self).__init__()
-        self.eval_net = Net(state_dim, action_dim).to(device) 
-        self.target_net = Net(state_dim, action_dim).to(device)
+        self.eval_net = Net(state_dim, action_dim, is_regression).to(device) 
+        self.target_net = Net(state_dim, action_dim, is_regression).to(device)
         # self.target_net = copy.deepcopy(self.eval_net)
         self.state_dim = state_dim
         self.action_dim = action_dim
