@@ -66,55 +66,38 @@ class ReplayMemory(object):
             print('epi', i, 'length', len(self.memory[i]))
             print(print([(m[3], m[1],m[2]) for m in self.memory[i]]))
 
-    
+
 class Net(nn.Module):
     """docstring for Net"""
-    def __init__(self, state_dim, action_dim, is_regression=False):
+    def __init__(self, state_dim, action_dim):
         super(Net, self).__init__()
         self.lstm_i_dim = 16    # input dimension of LSTM
         self.lstm_h_dim = 16     # output dimension of LSTM
         self.lstm_N_layer = 1   # number of layers of LSTM
         self.N_action = action_dim
-        
-        # Layers
         self.fc1 = nn.Linear(state_dim, 200)
-        self.fc1.weight.data.normal_(0, 0.1)
-        
-        self.fc2 = nn.Linear(200, self.lstm_i_dim)
-        self.fc2.weight.data.normal_(0, 0.1)
-        
+        self.fc1.weight.data.normal_(0,0.1)
+        self.fc2 = nn.Linear(200,self.lstm_i_dim)
+        self.fc2.weight.data.normal_(0,0.1)
         self.lstm = nn.LSTM(input_size=self.lstm_i_dim, hidden_size=self.lstm_h_dim, num_layers=self.lstm_N_layer)
-        
         self.out = nn.Linear(self.lstm_h_dim, action_dim)
-        self.out.weight.data.normal_(0, 0.1)
-        
-        self.is_regression = is_regression
-        
-    def forward(self, x, hidden):
-        # First fully connected layers with ReLU activation
+        self.out.weight.data.normal_(0,0.1)
+
+    def forward(self,x, hidden):
         h1 = F.relu(self.fc1(x))
         h2 = F.relu(self.fc2(h1))
-        
-        # Add a dimension for LSTM (seq_len = 1, batch_size = 1)
-        h2 = h2.unsqueeze(1)  # [batch, 1, lstm_i_dim]
-        
-        # LSTM forward pass
+        h2 = h2.unsqueeze(1)
+        # print(h2)
         h3, new_hidden = self.lstm(h2, hidden)
-        
-        if self.is_regression:
-            output = F.relu(output)  # Apply ReLU activation only for regression tasks
-        
-        # Output layer
-        output = self.out(h3.squeeze(1))  # [batch, action_dim]       
-        
-        return output, new_hidden
+        action_prob = self.out(h3)
+        return action_prob, new_hidden
 
 class DRQN():
     """docstring for DQN"""
-    def __init__(self, state_dim, action_dim, max_epi_num=50, max_eps_len=100, is_regression=False):
-        super(DRQN, self).__init__()
-        self.eval_net = Net(state_dim, action_dim, is_regression).to(device) 
-        self.target_net = Net(state_dim, action_dim, is_regression).to(device)
+    def __init__(self, state_dim, action_dim, max_epi_num=50, max_eps_len=100):
+        # super(DRQN, self).__init__()
+        self.eval_net = Net(state_dim, action_dim).to(device) 
+        self.target_net = Net(state_dim, action_dim).to(device)
         # self.target_net = copy.deepcopy(self.eval_net)
         self.state_dim = state_dim
         self.action_dim = action_dim
@@ -126,11 +109,7 @@ class DRQN():
 
         self.learn_step_counter = 0
         self.memory_dict = dict()
-        # self.memory_counter = 0
-        # self.memory = np.zeros((MEMORY_CAPACITY, self.state_dim * 2 + 2))
-        # why the NUM_STATE*2 +2
-        # When we store the memory, we put the state, action, reward and next_state in the memory
-        # here reward and action is a number, state is a ndarray
+
         self.optimizer = torch.optim.Adam(self.eval_net.parameters(), lr=LR)
         self.loss_func = nn.MSELoss()
 
@@ -143,26 +122,19 @@ class DRQN():
         # print(episole)
         if hidden == None:
             hidden = (Variable(torch.zeros(1, 1, self.eval_net.lstm_i_dim).float().to(device)), Variable(torch.zeros(1, 1, self.eval_net.lstm_i_dim).float().to(device)))
-        # print(obs.device, hidden[0].device)
         if random.random() > episole:
-            # print('agent')
-            # print(obs, hidden)
             action_value, new_hidden = self.eval_net.forward(obs, hidden)
-            
             with torch.no_grad():
+                len(action_value[0,0].cpu().numpy())
                 action_value = action_value[0,0].cpu().numpy() - limit_action
                 action = np.argmax(action_value)
-            # print('action_value',action_value)
-            # input('stop')
             agent_action_count_array[action] += 1
-            # print(action)
         else:
-            # print('random')
             q, new_hidden = self.eval_net.forward(obs, hidden)
             action = np.random.choice(choices)
         return action, new_hidden
 
-    def learn(self):
+    def learn(self, test=False):
         if self.buffer.is_available():
             # print('learn')
             if self.learn_step_counter % Q_NETWORK_ITERATION ==0:
@@ -179,6 +151,9 @@ class DRQN():
                     obs_list.append(memo[i][0])
                     action_list.append(memo[i][1])
                     reward_list.append(memo[i][2])
+                if len(obs_list) == 0:
+                    return
+                # print(len(obs_list))
                 obs_list = torch.FloatTensor(np.array(obs_list)).to(device)
                 hidden = (Variable(torch.zeros(1, 1, self.eval_net.lstm_i_dim).float().to(device)), Variable(torch.zeros(1, 1, self.eval_net.lstm_i_dim).float().to(device)))
                 q_next, _ = self.target_net.forward(obs_list, hidden)
@@ -191,13 +166,14 @@ class DRQN():
                 q_target[T,0,action_list[T]] = reward_list[T]
                 loss = self.loss_func(q_eval, q_target)
 
+                # print('loss: ', loss)
+                
                 self.optimizer.zero_grad()
                 loss.backward()
                 self.optimizer.step()
 
     def save(self, model_path):
         torch.save(self.eval_net.state_dict(), f'{model_path}/eval_net.pth')
-        # torch.save(self.optimizer.state_dict(), self.directory + 'optimizer.pth')
         print("====================================")
         print("Model DQN has been saved...")
         print("====================================")
@@ -211,9 +187,7 @@ class DRQN():
             else:
                 print('load from cpu')
                 self.eval_net.load_state_dict(torch.load(f'{model_path}/eval_net.pth', map_location=torch.device('cpu')))
-            # self.optimizer.load_state_dict(torch.load(self.directory + 'optimizer.pth'))
-            # self.eval_net.eval()
             print("load model from {}".format(f'{model_path}/eval_net.pth'))
             print("====================================")
-            print("model DQN has been loaded...")
+            print("model DRQN has been loaded...")
             print("====================================")

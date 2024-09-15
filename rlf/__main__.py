@@ -83,11 +83,21 @@ def main():
 
     if args.proj is not None:
         execution = Execution(args.execution)
+        # print('set_backend')
         backend_loggers = execution.set_backend(args.proj)
-        contract_manager = execution.get_contracts()
+        # print('get_contracts')
+        contract_manager = execution.get_contracts() # return contracts in json
         if args.contract is not None:
             contract_manager.set_fuzz_contracts([args.contract])
         account_manager = execution.get_accounts()
+    
+    # contract_manager.dump('test_contracts')
+    # dump the function opcode
+    # for name, contract in contract_manager.contract_dict.items():
+    #     print(name)
+    #     contract.abi.dump(address=args.address, path='built/new_leaking_suicidal_abi')
+    #     # contract.abi.dump(address=args.address, path='built')
+    # return
 
     if args.fuzzer == 'random':
         print('fuzzer random')
@@ -99,14 +109,16 @@ def main():
         obs = ObsFRandom(contract_manager, account_manager, args.dataset_dump_path)
     elif args.fuzzer == 'reinforcement':
         policy = PolicyReinforcement(execution, contract_manager, account_manager, args)
-        if args.mode == 'train':
+        # input('stop')
+        if args.mode == 'train': #args.train_dir is not None:
+            # policy.start_train()
             print('train mode')
         policy.load_model()
         obs = ObsReinforcement(contract_manager, account_manager, args.dataset_dump_path)
 
     environment = Environment(args.limit, args.seed, args.max_episode, start_time)
     if args.fuzzer == 'reinforcement':
-        result, count_dict = environment.fuzz_loop_RL(policy, obs, start_time, args)
+        result = environment.MADFuzz_run(policy, obs, start_time, args)
     else:
         result = environment.fuzz_loop(policy, obs)
 
@@ -117,6 +129,14 @@ def main():
     result['time'] = end_time - start_time
     result['end_time'] = end_time
     result['final'] = obs.stat.export_result()
+    # export the result
+    # if args.address and args.fuzzer == 'reinforcement':
+    #     with open(f"fuzz_result_{args.fuzzer}_dqn_{args.mode}/{args.address}.json",'w') as f:
+    #         # json.dump(obs.stat.to_json(),f)
+    #         result['final'] = obs.stat.export_result()
+    #         json.dump(result,f)
+    #     with open(f'temp_data/{args.address}.json','w') as f:
+    #         json.dump(count_dict,f)
     if args.output_path:
         with open(f'{args.output_path}/{args.address}.json','w') as f:
             json.dump(result,f)
