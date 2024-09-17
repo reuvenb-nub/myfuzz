@@ -231,6 +231,7 @@ class PolicyReinforcement(PolicyBase):
         self.action_count_array[action] += 1
         self.action_trace.append(action)
         
+        
         pred_f = np.random.choice(self.valid_action[contract.name][action])
         pred_f = self.method_name_to_index[pred_f]
 
@@ -245,7 +246,12 @@ class PolicyReinforcement(PolicyBase):
         else:
             sender = pred_sender
 
-        arguments, _, _, new_hiddens_1_5 = self._select_arguments(contract, method, sender, obs, x_state, x_method[pred_f], hiddens, episole)
+        self.last_method[contract.name] = pred_f
+        
+        new_state, new_method, new_contract = self.compute_state(obs)
+        
+      
+        arguments, _, _, new_hiddens_1_5 = self._select_arguments(contract, method, sender, obs, new_state, new_method[pred_f], hiddens, episole)
         amount = self._select_amount(contract, method, sender, obs, pred_amount)
         timestamp = self._select_timestamp(obs)
         
@@ -253,10 +259,9 @@ class PolicyReinforcement(PolicyBase):
         
         arg_actions = [self.int_actions, self.uint_actions, self.bool_actions, self.addr_actions, self.byte_actions]
 
-        self.last_method[contract.name] = pred_f
 
         tx = Tx(self, contract.name, address, method.name, bytes(), arguments, amount, sender, timestamp, True)
-        print("Tx: ", method.name,arguments,amount,sender)
+        # print("Tx: ", method.name,arguments,amount,sender)
         return tx, action, new_hiddens, arg_actions
 
     def compute_state(self, obs):
@@ -269,16 +274,15 @@ class PolicyReinforcement(PolicyBase):
             self.method_bows[m.name] = m.bow
         for method, feats in obs.record_manager.get_method_features(contract.name).items():
             method_feats[method] = feats + self.method_bows[method]
-
+                
         if contract.name not in self.last_method:
             last_method_feature = np.zeros(self.feature_size)
             self.method_names[contract.name] = [m.name for m in contract.abi.methods]
         else:
             with torch.no_grad():
-                # print(self.last_method[contract.name])
                 last_method_feature = self.calc_method_features(contract.name, method_feats, True)
+                # print(last_method_feature)
                 last_method_feature = torch.from_numpy(last_method_feature[self.last_method[contract.name]]).float().to(device)
-                # print(last_method_feature.device)
                 last_method_feature = self.compress_net.compress_features(last_method_feature).cpu().numpy()
 
         x_state = self.action_count_array
@@ -317,6 +321,8 @@ class PolicyReinforcement(PolicyBase):
     def _select_arguments(self, contract, method, sender, obs, x_state, x_method, hiddens, episole):
         arguments, addr_args, int_args = [], [], []
         new_hidden_1, new_hidden_2, new_hidden_3, new_hidden_4, new_hidden_5 = None, None, None, None, None
+        arr_hiddens = [None, None, None, None, None]
+        
         for arg in method.inputs:
             t = arg.evm_type.t
             if t == SolType.IntTy or t == SolType.UintTy:
@@ -332,10 +338,10 @@ class PolicyReinforcement(PolicyBase):
             elif t == SolType.StringTy:
                 arguments.append(self._select_string(obs))
             elif t == SolType.SliceTy:
-                arg = self._select_slice(contract, method, sender, arg.evm_type.elem, obs, x_state, hiddens, episole)
+                arg, arr_hiddens = self._select_slice(contract, method, sender, arg.evm_type.elem, obs, x_state, hiddens, episole)
                 arguments.append(arg)
             elif t == SolType.ArrayTy:
-                arg = self._select_array(contract, method, sender, arg.evm_type.size, arg.evm_type.elem, obs, x_state, hiddens, episole)
+                arg, arr_hiddens = self._select_array(contract, method, sender, arg.evm_type.size, arg.evm_type.elem, obs, x_state, hiddens, episole)
                 arguments.append(arg)
             elif t == SolType.AddressTy:
                 # TODO select address
@@ -349,6 +355,17 @@ class PolicyReinforcement(PolicyBase):
                 arguments.append(value)
             else:
                 assert False, 'type {} not supported'.format(t)
+        
+        if arr_hiddens[0] is not None:
+            new_hidden_1 = arr_hiddens[0]
+        if arr_hiddens[1] is not None:
+            new_hidden_2 = arr_hiddens[1]
+        if arr_hiddens[2] is not None:
+            new_hidden_3 = arr_hiddens[2]
+        if arr_hiddens[3] is not None:
+            new_hidden_4 = arr_hiddens[3]
+        if arr_hiddens[4] is not None:
+            new_hidden_5 = arr_hiddens[4]
 
         return arguments, addr_args, int_args, [new_hidden_1, new_hidden_2, new_hidden_3, new_hidden_4, new_hidden_5]
 
@@ -443,36 +460,54 @@ class PolicyReinforcement(PolicyBase):
         t = typ.t
         arr = []
 
+        new_hidden_1, new_hidden_2, new_hidden_3, new_hidden_4, new_hidden_5 = None, None, None, None, None
+        arr_hiddens = [None, None, None, None, None]
+
         for _ in range(size):
-            if t in (SolType.IntTy, SolType.UintTy):
 
-                chosen_int = None
-
+            if t == SolType.IntTy or t == SolType.UintTy:
                 if t == SolType.IntTy:
-                    arr.append(self._select_int(contract, method, typ.size, obs, chosen_int, x_state, hiddens[1], episole))
+                    value, new_hidden_1 = self._select_int(contract, method, arg.evm_type.size, obs, None, x_state, hiddens[1], episole)
+                    arr.append(value)
                 elif t == SolType.UintTy:
-                    arr.append(self._select_uint(contract, method, typ.size, obs, chosen_int, x_state, hiddens[2], episole))
+                    value, new_hidden_2 = self._select_uint(contract, method, arg.evm_type.size, obs, None, x_state, hiddens[2], episole)
+                    arr.append(value)
             elif t == SolType.BoolTy:
-                arr.append(self._select_bool(x_state, hiddens[3], episole))
+                value, new_hidden_3 = self._select_bool(x_state, hiddens[3], episole)
+                arr.append(value)
             elif t == SolType.StringTy:
                 arr.append(self._select_string(obs))
             elif t == SolType.SliceTy:
-                arg = self._select_slice(contract, method, sender, typ.elem, obs, x_state, hiddens, episole)
+                arg, arr_hiddens = self._select_slice(contract, method, sender, arg.evm_type.elem, obs, x_state, hiddens, episole)
                 arr.append(arg)
             elif t == SolType.ArrayTy:
-                arg = self._select_array(contract, method, sender, typ.size, typ.elem, obs, x_state, hiddens, episole)
+                arg, arr_hiddens = self._select_array(contract, method, sender, arg.evm_type.size, arg.evm_type.elem, obs, x_state, hiddens, episole)
                 arr.append(arg)
             elif t == SolType.AddressTy:
                 # TODO select address
-                arr.append(self._select_address(sender, x_state, hiddens[4], episole))
+                value, new_hidden_4 = self._select_address(sender, x_state, hiddens[4], episole)
+                arr.append(value)
             elif t == SolType.FixedBytesTy:
-                arr.append(self._select_fixed_bytes(typ.size, obs, x_state, hiddens[5], episole))
+                value, new_hidden_5 = self._select_fixed_bytes(arg.evm_type.size, obs, x_state, hiddens[5], episole)
+                arr.append(value)
             elif t == SolType.BytesTy:
-                arr.append(self._select_bytes(obs, x_state, hiddens[5], episole))
+                value, new_hidden_5 = self._select_bytes(obs, x_state, hiddens[5], episole)
+                arr.append(value)
             else:
                 assert False, 'type {} not supported'.format(t)
+                
+        if arr_hiddens[0] is not None:
+            new_hidden_1 = arr_hiddens[0]
+        if arr_hiddens[1] is not None:
+            new_hidden_2 = arr_hiddens[1]
+        if arr_hiddens[2] is not None:
+            new_hidden_3 = arr_hiddens[2]
+        if arr_hiddens[3] is not None:
+            new_hidden_4 = arr_hiddens[3]
+        if arr_hiddens[4] is not None:
+            new_hidden_5 = arr_hiddens[4]
 
-        return arr
+        return arr, [new_hidden_1, new_hidden_2, new_hidden_3, new_hidden_4, new_hidden_5]
 
     def _select_fixed_bytes(self, size, obs, x_state, hidden, episole):
         bs = []

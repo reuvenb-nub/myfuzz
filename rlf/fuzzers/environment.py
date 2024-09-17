@@ -101,7 +101,6 @@ class Environment:
                             action_cov[j] = 1
                     action_cov = action_cov.mean()
                     new_insn_coverage, new_block_coverage = epi_obs.stat.get_coverage(tx.contract)
-                    print(episode_reward)
                     
                 reward_of_bug = 0
                 for bug in epi_obs.stat.update_bug:
@@ -111,10 +110,8 @@ class Environment:
                 if new_cov_reward == 0: 
                     new_cov_reward = -1
                 
-                reward_f = 0.6 * reward_of_bug + (0.4) * action_cov
-                reward_a = 0.6 * reward_of_bug + (0.4) * new_cov_reward
-                
-                
+                reward_f = 0.7 * reward_of_bug + (0.3) * action_cov
+                reward_a = 0.7 * reward_of_bug + (0.3) * new_cov_reward
                 
                 policy.agent.store_transition(state, action, reward_f, step*episode)
                 if len(arg_actions[0]) > 0:
@@ -131,26 +128,26 @@ class Environment:
                 state = next_state
                 episode_reward += reward_f
                     
-                if args.mode == 'train':
-                    # policy.agent.buffer.print_info()
-                    policy.agent.learn()
-                    policy.int_agent.learn()
-                    policy.uint_agent.learn()
-                    policy.bool_agent.learn()
-                    policy.addr_agent.learn()
-                    policy.byte_agent.learn()
-                    # exit(1)
-                    episole = init_episole - 0.6 * (step*episode - self.start_train)/(self.limit*50 - self.start_train)
-                    
-                if step == self.max_episode:
-                    for bug in obs.stat.to_json()[args.contract]['bugs']:
-                        if bug not in result['bug_finder']:
-                            result['bug_finder'][bug] = dict()
-                        for func in obs.stat.to_json()[args.contract]['bugs'][bug]:
-                            if func not in result['bug_finder'][bug]:
-                                result['bug_finder'][bug][func] = time.time()
+            if args.mode == 'train':
+                # policy.agent.buffer.print_info()
+                policy.agent.learn()
+                policy.int_agent.learn()
+                policy.uint_agent.learn()
+                policy.bool_agent.learn()
+                policy.addr_agent.learn()
+                policy.byte_agent.learn()
+                # exit(1)
+                episole = init_episole - 0.6 * (step*episode - self.start_train)/(self.limit*50 - self.start_train)
+                
+                
+            for bug in obs.stat.to_json()[args.contract]['bugs']:
+                if bug not in result['bug_finder']:
+                    result['bug_finder'][bug] = dict()
+                for func in obs.stat.to_json()[args.contract]['bugs'][bug]:
+                    if func not in result['bug_finder'][bug]:
+                        result['bug_finder'][bug][func] = time.time()
 
-                    result['txs_loop'].append((time.time(),obs.stat.to_json()))
+                result['txs_loop'].append((time.time(),obs.stat.to_json()))
                     
                 if time.time() - start_time >= args.limit_time:
                     break
