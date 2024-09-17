@@ -440,7 +440,7 @@ class PolicyReinforcement(PolicyBase):
         action, new_hidden = self.bool_agent.choose_action(x_state, choices, limit_action, hidden=hidden, episole=episole, agent_action_count_array=self.uint_agent_action_count_array)
         self.bool_actions.append(action), new_hidden
         
-        return action
+        return action, new_hidden
 
     def _select_string(self, obs):
         bs = []
@@ -514,10 +514,10 @@ class PolicyReinforcement(PolicyBase):
         for _ in range(size):
             choices = [i for i in range(256)]
             limit_action = np.zeros(256)
-            action, new_hidden = self.bool_agent.choose_action(x_state, choices, limit_action, hidden=hidden, episole=episole, agent_action_count_array=self.uint_agent_action_count_array)
+            action, new_hidden = self.byte_agent.choose_action(x_state, choices, limit_action, hidden=hidden, episole=episole, agent_action_count_array=self.uint_agent_action_count_array)
             bs.append(action)
         self.byte_actions.append(bs), new_hidden
-        return bs
+        return bs, new_hidden
 
     def _select_bytes(self, obs, x_state, hidden, episole):
         size = random.randint(1, 15)
