@@ -116,13 +116,13 @@ class Environment:
                 policy.agent.store_transition(state, action, reward_f, step*episode)
                 if len(arg_actions[0]) > 0:
                     policy.int_agent.store_transition(state, arg_actions[0][0], reward_a, step*episode)
-                if len(arg_actions[0]) > 0:
+                if len(arg_actions[1]) > 0:
                     policy.uint_agent.store_transition(state, arg_actions[1][0], reward_a, step*episode)
-                if len(arg_actions[0]) > 0:
+                if len(arg_actions[2]) > 0:
                     policy.bool_agent.store_transition(state, arg_actions[2][0], reward_a, step*episode)
-                if len(arg_actions[0]) > 0:
+                if len(arg_actions[3]) > 0:
                     policy.addr_agent.store_transition(state, arg_actions[3][0], reward_a, step*episode)
-                if len(arg_actions[0]) > 0:
+                if len(arg_actions[4]) > 0:
                     policy.byte_agent.store_transition(state, arg_actions[4][0], reward_a, step*episode)
                     
                 state = next_state

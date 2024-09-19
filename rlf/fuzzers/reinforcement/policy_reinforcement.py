@@ -467,10 +467,10 @@ class PolicyReinforcement(PolicyBase):
 
             if t == SolType.IntTy or t == SolType.UintTy:
                 if t == SolType.IntTy:
-                    value, new_hidden_1 = self._select_int(contract, method, arg.evm_type.size, obs, None, x_state, hiddens[1], episole)
+                    value, new_hidden_1 = self._select_int(contract, method, typ.size, obs, None, x_state, hiddens[1], episole)
                     arr.append(value)
                 elif t == SolType.UintTy:
-                    value, new_hidden_2 = self._select_uint(contract, method, arg.evm_type.size, obs, None, x_state, hiddens[2], episole)
+                    value, new_hidden_2 = self._select_uint(contract, method, typ.size, obs, None, x_state, hiddens[2], episole)
                     arr.append(value)
             elif t == SolType.BoolTy:
                 value, new_hidden_3 = self._select_bool(x_state, hiddens[3], episole)
@@ -478,17 +478,17 @@ class PolicyReinforcement(PolicyBase):
             elif t == SolType.StringTy:
                 arr.append(self._select_string(obs))
             elif t == SolType.SliceTy:
-                arg, arr_hiddens = self._select_slice(contract, method, sender, arg.evm_type.elem, obs, x_state, hiddens, episole)
+                arg, arr_hiddens = self._select_slice(contract, method, sender, typ.elem, obs, x_state, hiddens, episole)
                 arr.append(arg)
             elif t == SolType.ArrayTy:
-                arg, arr_hiddens = self._select_array(contract, method, sender, arg.evm_type.size, arg.evm_type.elem, obs, x_state, hiddens, episole)
+                arg, arr_hiddens = self._select_array(contract, method, sender, typ.size, typ.elem, obs, x_state, hiddens, episole)
                 arr.append(arg)
             elif t == SolType.AddressTy:
                 # TODO select address
                 value, new_hidden_4 = self._select_address(sender, x_state, hiddens[4], episole)
                 arr.append(value)
             elif t == SolType.FixedBytesTy:
-                value, new_hidden_5 = self._select_fixed_bytes(arg.evm_type.size, obs, x_state, hiddens[5], episole)
+                value, new_hidden_5 = self._select_fixed_bytes(typ.size, obs, x_state, hiddens[5], episole)
                 arr.append(value)
             elif t == SolType.BytesTy:
                 value, new_hidden_5 = self._select_bytes(obs, x_state, hiddens[5], episole)
