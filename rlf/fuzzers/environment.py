@@ -104,13 +104,15 @@ class Environment:
                     
                 reward_of_bug = 0
                 for bug in epi_obs.stat.update_bug:
-                    if bug in ['Suicidal', 'Leaking', 'Reentrancy', 'UnhandledException']:
+                    if bug in ['Suicidal', 'Leaking', 'Reentrancy', 'UnhandledException', 'Arithmetic', 'Locking', 'DangerousDelegatecall', 'BlockStateDep']:
                         reward_of_bug = 1
                         
                 if new_cov_reward == 0: 
                     new_cov_reward = -1
-                
-                reward_f = 0.7 * reward_of_bug + (0.3) * action_cov
+                    
+                reward_f = 0
+                if step == self.max_episode:
+                    reward_f = 0.7 * reward_of_bug + (0.3) * action_cov
                 reward_a = 0.7 * reward_of_bug + (0.3) * new_cov_reward
                 
                 policy.agent.store_transition(state, action, reward_f, step*episode)
