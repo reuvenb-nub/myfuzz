@@ -49,7 +49,11 @@ class Environment:
         LOG.info('start reinforcement policy')
         result['txs_loop'] = []
         result['bug_finder'] = dict()
-        
+
+        if args.mode == 'test':
+            episole = 0.15
+        else:
+            episole = init_episole       
 
         for episode in range(1, self.limit+1):
             LOG.info(f'Episode: {episode}')
@@ -63,10 +67,7 @@ class Environment:
             hiddens = [None, None, None, None, None, None]
             init_episole = 0.7
 
-            if args.mode == 'test':
-                episole = 0.15
-            else:
-                episole = init_episole
+
         
             if args.mode == 'train':
                 policy.agent.buffer.create_new_epi()
@@ -140,7 +141,7 @@ class Environment:
                 policy.uint_agent.learn()
                 policy.bool_agent.learn()
                 policy.addr_agent.learn()
-                policy.byte_agent.learn()
+                # policy.byte_agent.learn()
                 # exit(1)
                 episole = init_episole - 0.6 * (step*episode - self.start_train)/(self.limit*50 - self.start_train)
                 
