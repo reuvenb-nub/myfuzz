@@ -50,8 +50,8 @@ class Stat:
             Locking(contract_manager, account_manager),
             Suicidal(contract_manager, account_manager),
             UnhandledException(),
-            Reentrancy(contract_manager, account_manager),
-            Arithmetic()
+            Reentrancy(contract_manager, account_manager)
+            # Arithmetic()
         ]
 
     def reset_coverage(self):

@@ -99,12 +99,15 @@ class Environment:
                                 action_cov[j] += method_cov[method]['block_cov']/len(valid_action[action])
                         else:
                             action_cov[j] = 1
+                            
+                    print("method_cov: ", method_cov)
+                    
                     action_cov = action_cov.mean()
                     new_insn_coverage, new_block_coverage = epi_obs.stat.get_coverage(tx.contract)
                     
                 reward_of_bug = 0
                 for bug in epi_obs.stat.update_bug:
-                    if bug in ['Suicidal', 'Leaking', 'Reentrancy', 'UnhandledException', 'Arithmetic', 'Locking', 'DangerousDelegatecall', 'BlockStateDep']:
+                    if bug in ['Suicidal', 'Leaking', 'Reentrancy']:
                         reward_of_bug = 1
                         
                 if new_cov_reward == 0: 
@@ -309,10 +312,10 @@ class Environment:
                     # policy.agent.buffer.print_info()
                     if args.mode == 'train':
                         policy.agent.learn()
-                        # policy.int_agent.learn()
+                        policy.int_agent.learn()
                         policy.uint_agent.learn(test=True)
-                        # policy.bool_agent.learn()
-                        # policy.addr_agent.learn()
+                        policy.bool_agent.learn()
+                        policy.addr_agent.learn()
                         # policy.byte_agent.learn()
                         # exit(1)
                         episole = init_episole - 0.6 * (i - self.start_train)/(self.limit - self.start_train)
