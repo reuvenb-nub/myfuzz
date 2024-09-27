@@ -50,6 +50,9 @@ class Environment:
         result['txs_loop'] = []
         result['bug_finder'] = dict()
 
+        
+        init_episole = 0.7
+
         if args.mode == 'test':
             episole = 0.15
         else:
@@ -65,8 +68,6 @@ class Environment:
             
             state, x_method, contract = policy.compute_state(epi_obs)
             hiddens = [None, None, None, None, None, None]
-            init_episole = 0.7
-
 
         
             if args.mode == 'train':
