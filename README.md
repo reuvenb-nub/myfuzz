@@ -1,17 +1,4 @@
-# RLF
-
-RLF is an vulnerability guided fuzzers for smart contracts based on reinforcement learning. For more details, please refer to [RLF ASE'22 paper](https://dl.acm.org/doi/abs/10.1145/3551349.3560429).
-
 ## Setup
-
-### Docker
-
-We provide the docker image. Users can pull this image and create a containier, the code is in "/rlf".
-```
-docker pull damonhero/rlf:latest
-```
-
-
 
 ### Manually
 
@@ -33,7 +20,7 @@ Clone this repo:
 ```
 $ mkdir -p $GOPATH/src
 $ cd $GOPATH/src
-$ git clone https://github.com/Demonhero0/rlf.git
+$ git clone https://github.com/reuvenb-nub/myfuzz.git
 ```
 
 Clone [go-ethereum](https://geth.ethereum.org/) and apply our patch:
