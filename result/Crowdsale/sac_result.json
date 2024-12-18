@@ -1,0 +1,1 @@
+{"tx_count": 39964, "num_contracts": 1, "insn_coverage": 0.634453781512605, "block_coverage": 0.75, "Crowdsale": {"tx_count": 39964, "covered_insns": 302, "insn_coverage": 0.634453781512605, "temp_insn_coverage": 0.4579831932773109, "all_insns": 476, "covered_blocks": 39, "block_coverage": 0.75, "temp_block_coverage": 0.46153846153846156, "all_blocks": 52, "bugs": {}}}

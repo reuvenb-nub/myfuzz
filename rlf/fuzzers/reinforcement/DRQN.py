@@ -173,7 +173,7 @@ class DRQN():
                 self.optimizer.step()
 
     def save(self, model_path):
-        torch.save(self.eval_net.state_dict(), f'{model_path}/eval_net.pth')
+        torch.save(self.eval_net.state_dict(), f'{model_path}/drqn_eval_net.pth')
         print("====================================")
         print("Model DQN has been saved...")
         print("====================================")

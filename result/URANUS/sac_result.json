@@ -1,0 +1,22 @@
+{
+    "tx_count": 71328,
+    "num_contracts": 1,
+    "insn_coverage": 0.7914344382516867,
+    "block_coverage": 0.7448559670781894,
+    "URANUS": {
+        "tx_count": 71328,
+        "covered_insns": 2698,
+        "insn_coverage": 0.7914344382516867,
+        "temp_insn_coverage": 0.23936638310354943,
+        "all_insns": 3409,
+        "covered_blocks": 181,
+        "block_coverage": 0.7448559670781894,
+        "temp_block_coverage": 0.2674897119341564,
+        "all_blocks": 243,
+        "bugs": {
+            "Leaking": [
+                "withdraw"
+            ]
+        }
+    }
+}

@@ -8,6 +8,8 @@ import os
 import math
 
 from .DRQN import DRQN, device, use_cuda
+from .SAC import SAC
+# from .SAC import SACAgent
 
 from ..random import PolicyRandom
 from ..policy_base import PolicyBase
@@ -38,7 +40,20 @@ def get_decay(epi_iter):
 
 classification_list = ['pay-call','nopay-call','pay-nocall','nopay-nocall-store','selfdestruct']
 
-class PolicyReinforcement(PolicyBase):
+def map_to_range(value, new_min, new_max):
+    # Assuming value is in the range [-1, 1]
+    old_min, old_max = -1, 1
+    scaled_value = (value - old_min) / (old_max - old_min)
+    return scaled_value * (new_max - new_min) + new_min
+
+def reverse_map(value, new_min, new_max):
+    # Reverse map from the integer range to [-1, 1]
+    old_min, old_max = -1, 1
+    scaled_value = (value - new_min) / (new_max - new_min)
+    return scaled_value * (old_max - old_min) + old_min
+
+
+class PolicyReinforcementSAC(PolicyBase):
 
     def __init__(self, execution, contract_manager, account_manager, args):
         super().__init__(execution, contract_manager, account_manager)
@@ -57,9 +72,8 @@ class PolicyReinforcement(PolicyBase):
         self.action_size = ACTION_SIZE
 
         self.agent = DRQN(state_dim=110+ACTION_SIZE, action_dim=self.action_size)
-        
-        self.int_agent = DRQN(state_dim=110+ACTION_SIZE, action_dim=255)
-        self.uint_agent = DRQN(state_dim=110+ACTION_SIZE, action_dim=257)
+        self.int_agent = SAC(n_states=110+ACTION_SIZE, n_actions=1, memory_size=10000, batch_size=64, gamma=0.99, alpha=0.2, lr=0.0003, action_bounds=[-1, 1], reward_scale=1)
+        self.uint_agent = SAC(n_states=110+ACTION_SIZE, n_actions=1, memory_size=10000, batch_size=64, gamma=0.99, alpha=0.2, lr=0.0003, action_bounds=[-1, 1], reward_scale=1)
         self.bool_agent = DRQN(state_dim=110+ACTION_SIZE, action_dim=BOOL_SIZE)
         self.addr_agent = DRQN(state_dim=110+ACTION_SIZE, action_dim=len(self.addresses))
         self.byte_agent = DRQN(state_dim=110+ACTION_SIZE, action_dim=BYTE_SIZE)
@@ -209,7 +223,7 @@ class PolicyReinforcement(PolicyBase):
         # print(old_insn_coverage, old_block_coverage, new_insn_coverage, new_block_coverage, reward)
         x_state, x_method, contract = self.compute_state(obs)
 
-        return x_state, reward, np.float(destruct), x_method, contract
+        return x_state, reward, float(destruct), x_method, contract
 
     def select_tx(self, x_state, x_method, contract, obs, hiddens=[None, None, None, None, None, None], frandom=False, episole=0.3):
         self.int_actions = []
@@ -370,53 +384,20 @@ class PolicyReinforcement(PolicyBase):
         return arguments, addr_args, int_args, [new_hidden_1, new_hidden_2, new_hidden_3, new_hidden_4, new_hidden_5]
 
     def _select_int(self, contract, method, size, obs, chosen_int, x_state, hidden, episole):
-        limit_action = np.zeros(255)
-        limit_action[size-1::] = 1
-        choices = [i for i in range(size-1)]
-        action, new_hidden = self.int_agent.choose_action(x_state, choices, limit_action, hidden=hidden, episole=episole, agent_action_count_array=self.uint_agent_action_count_array)
+        valid_action_indices = list(range(0, size-1))
+        action = self.int_agent.choose_action(x_state)
         
-        shift_table = [i for i in range(-size+1, size)]
-        
-        shift_1 = shift_table[action*2]
-        shift_2 = shift_table[action*2+2] 
-        rand_1 = 1<<shift_1 if shift_1 > 0 else -1<<(-shift_1)
-        rand_2 = 1<<shift_2 if shift_2 > 0 else -1<<(-shift_2)
-        
-        value = random.randint(rand_1, rand_2-1)
-        
-        # s = random.random()
-        # if s < 0.9:
-        #     value = random.choice(self.int_values_frequent)
-        # elif s < 0.98:
-        #     value = random.choice(self.int_values_unfrequent)
-        # else:
-        #     p = 1 << (size - 1)
-        #     return random.randint(-p, p-1)
+        value = int(map_to_range(action, new_min=-(1<<size-1), new_max=(1<<size-1)-1))
 
-        # value &= ((1 << size) - 1)
-        # if value & (1 << (size - 1)):
-        #     value -= (1 << size)
         self.int_actions.append(action)
-        return value, new_hidden
+        return value, None
 
     def _select_uint(self, contract, method, size, obs, chosen_int, x_state, hidden, episole):
-        limit_action = np.zeros(257)
-        limit_action[size+1::] = 1
-        choices = [i for i in range(size+1)]
-        action, new_hidden = self.uint_agent.choose_action(x_state, choices, limit_action, hidden=hidden, episole=episole, agent_action_count_array=self.uint_agent_action_count_array)
-        value = 0 if action == 0 else random.randint(1<<(int(action)-1), (1<<int(action))-1)
-        # print(action, value)     
-      
-        # s = random.random()
-        # if s < 0.9:
-        #     value = random.choice(self.int_values_frequent)
-        # elif s < 0.98:
-        #     value = random.choice(self.int_values_unfrequent)
-        # else:
-        #     p = 1 << size
-        #     return random.randint(0, p-1)
+        valid_action_indices = list(range(0, size+1))
+        action = self.uint_agent.choose_action(x_state)
+        value = int(map_to_range(action, new_min=0, new_max=(1<<size)-1))
         self.uint_actions.append(action)
-        return value, new_hidden
+        return value, None
 
     def _select_address(self, sender, x_state, hidden, episole):
         normal_users = [addr for addr in self.addresses if addr not in self.account_manager.attacker_addresses]

@@ -1,1 +1,3 @@
-print(2*256)
+import time
+
+print(time.time())

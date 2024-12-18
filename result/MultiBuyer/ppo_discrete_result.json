@@ -1,0 +1,1 @@
+{"tx_count": 7305, "num_contracts": 1, "insn_coverage": 0.3147226173541963, "block_coverage": 0.24083769633507854, "MultiBuyer": {"tx_count": 7305, "covered_insns": 885, "insn_coverage": 0.3147226173541963, "temp_insn_coverage": 0.0, "all_insns": 2812, "covered_blocks": 46, "block_coverage": 0.24083769633507854, "temp_block_coverage": 0.0, "all_blocks": 191, "bugs": {}}}

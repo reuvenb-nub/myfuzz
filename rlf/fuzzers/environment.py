@@ -1,5 +1,6 @@
 import random
 import re
+import os
 import numpy as np
 import torch
 import logging
@@ -10,7 +11,66 @@ from ..execution import Execution, Tx
 from ..ethereum import Method
 from .random import PolicyRandom
 from .F_random import PolicyFRandom
-from .reinforcement.policy_reinforcement import PolicyReinforcement
+from .reinforcement.policy_reinforcement_drqn import PolicyReinforcementDRQN
+from .reinforcement.policy_reinforcement_ppo_d import PolicyReinforcementPPODiscrete
+from .reinforcement.policy_reinforcement_ppo_c import PolicyReinforcementPPOContinuous
+from .reinforcement.policy_reinforcement_sac import PolicyReinforcementSAC
+from .reinforcement.normalization import Normalization, RewardScaling
+import matplotlib.pyplot as plt
+
+has_continuous_action_space = True  # continuous action space; else discrete
+
+max_ep_len = 1000                   # max timesteps in one episode
+max_training_timesteps = int(3e6)   # break training loop if timeteps > max_training_timesteps
+
+print_freq = max_ep_len * 10        # print avg reward in the interval (in num timesteps)
+log_freq = max_ep_len * 2           # log avg reward in the interval (in num timesteps)
+save_model_freq = int(1e5)          # save model frequency (in num timesteps)
+
+action_std = 0.6                    # starting std for action distribution (Multivariate Normal)
+action_std_decay_rate = 0.05        # linearly decay action_std (action_std = action_std - action_std_decay_rate)
+min_action_std = 0.1                # minimum action_std (stop decay after action_std <= min_action_std)
+action_std_decay_freq = int(2.5e5)  # action_std decay frequency (in num timesteps)
+#####################################################
+
+## Note : print/log frequencies should be > than max_ep_len
+
+################ PPO hyperparameters ################
+update_timestep = max_ep_len * 4      # update policy every n timesteps
+K_epochs = 80               # update policy for K epochs in one PPO update
+
+eps_clip = 0.2          # clip parameter for PPO
+gamma = 0.99            # discount factor
+
+lr_actor = 0.0003       # learning rate for actor network
+lr_critic = 0.001       # learning rate for critic network
+
+random_seed = 0         # set random seed if required (0 = no random seed)
+#####################################################
+
+def evaluate_policy(args, env, agent, state_norm):
+    times = 3
+    evaluate_reward = 0
+    for _ in range(times):
+        s = env.reset()
+        if args.use_state_norm:
+            s = state_norm(s, update=False)  # During the evaluating,update=False
+        done = False
+        episode_reward = 0
+        while not done:
+            a = agent.evaluate(s)  # We use the deterministic policy during the evaluating
+            if args.policy_dist == "Beta":
+                action = 2 * (a - 0.5) * args.max_action  # [0,1]->[-max,max]
+            else:
+                action = a
+            s_, r, done, _ = env.step(action)
+            if args.use_state_norm:
+                s_ = state_norm(s_, update=False)
+            episode_reward += r
+            s = s_
+        evaluate_reward += episode_reward
+
+    return evaluate_reward / times
 
 
 LOG = logging.getLogger(__name__)
@@ -27,7 +87,7 @@ class Environment:
         self.start_train = 5 * max_episode
         self.start_time = start_time
         
-    def MADFuzz_run(self, policy, obs, start_time, args):
+    def MADFuzz_drqn(self, policy, obs, start_time, args):
         if len(policy.contract_manager.fuzz_contract_names) != 1:
             print('please input only one contract to fuzz')
             return
@@ -35,9 +95,10 @@ class Environment:
 
         result = dict()
         result['max_episode'] = self.max_episode
-
-        print('MADFuzz_run')
-        
+        count_dict = dict()
+        count_dict['action'] = dict()
+        count_dict['method'] = dict()
+        print('fuzz_loop_RL')
         obs.init()
 
         LOG.info(obs.stat)
@@ -50,126 +111,729 @@ class Environment:
         result['txs_loop'] = []
         result['bug_finder'] = dict()
 
-        
+        random.seed(self.seed)
+        torch.manual_seed(self.seed)
+        np.random.seed(self.seed)
+
+        state, x_method, contract = policy.compute_state(obs)
+        hidden = None
         init_episole = 0.7
 
         if args.mode == 'test':
             episole = 0.15
         else:
-            episole = init_episole       
-
-        for episode in range(1, self.limit+1):
-            LOG.info(f'Episode: {episode}')
-            
-            epi_obs = obs
-            policy.reset()
-            policy.reset_dqn_state()
-            episode_reward = 0
-            
-            state, x_method, contract = policy.compute_state(epi_obs)
-            hiddens = [None, None, None, None, None, None]
-
+            episole = init_episole
         
-            if args.mode == 'train':
-                policy.agent.buffer.create_new_epi()
-                policy.int_agent.buffer.create_new_epi()
-                policy.uint_agent.buffer.create_new_epi()
-                policy.bool_agent.buffer.create_new_epi()
-                policy.addr_agent.buffer.create_new_epi()
-                policy.byte_agent.buffer.create_new_epi()
+        hiddens = [None, None, None, None, None, None]
+
+        episode_reward_f = 0
+        episode_reward_a = 0
+        reward_f_values = []
+        reward_a_values = []
+        iterations = []
+
+        start_time = time.time()
+        i = 1
+        elapsed_time = 0
+        
+
+        while elapsed_time < self.limit:
+            print("step: ", i)
+            if i % 1000 == 0:
+                for contract_name in policy.contract_manager.fuzz_contract_names:
+                    contract = policy.contract_manager[contract_name]
+                    policy.execution.set_balance(contract.addresses[0], 10 ** 29)
+
+            if i % self.max_episode < self.max_episode/10:
+                tx, action, new_hiddens, arg_actions = policy.select_tx(state, x_method, contract, obs, hiddens=hiddens, frandom=False, episole=1)
+            else:
+                tx, action, new_hiddens, arg_actions = policy.select_tx(state, x_method, contract, obs, hiddens=hiddens, frandom=False, episole=episole)
+                
+            for j, new_hidden in enumerate(new_hiddens):
+                if new_hidden is not None:
+                    hiddens[j] = new_hidden
+
+            if tx is None:
+                break
+            next_state, new_cov_reward, done, x_method, contract = policy.step(tx, obs)
+
+            reward_f = 0
+
+            action_cov = np.zeros(policy.action_size)
+            method_cov = obs.record_manager.get_method_coverage(tx.contract)
+            valid_action = policy.valid_action[tx.contract]
+            for j, action in enumerate(valid_action):
+                if len(valid_action[action]) > 0:
+                    for method in valid_action[action]:
+                        action_cov[j] += method_cov[method]['block_cov']/len(valid_action[action])
+                else:
+                    action_cov[j] = 1
+
+            action_cov = action_cov.mean()
+            new_insn_coverage, new_block_coverage = obs.stat.get_coverage(tx.contract)
+            reward_of_bug = 0
+            for bug in obs.stat.update_bug:
+                if bug in ['Suicidal', 'Leaking', 'Reentrancy']:
+                    reward_of_bug = 1
+
+            if new_cov_reward == 0: 
+                new_cov_reward = -1
             
+            reward_a = 0.7 * reward_of_bug + (0.3) * new_cov_reward
 
-            for step in range(1, self.max_episode+1):
-                tx, action, new_hiddens, arg_actions = policy.select_tx(state, x_method, contract, epi_obs, hiddens=hiddens, frandom=False, episole=episole)
-                
-                for i, new_hidden in enumerate(new_hiddens):
-                    if new_hidden is not None:
-                        hiddens[i] = new_hidden
-                
-                if tx is None:
-                    break
-                next_state, new_cov_reward, done, x_method, contract = policy.step(tx, epi_obs)
-                
-                action_cov = 0
-                if step == self.max_episode:
-                    action_cov = np.zeros(policy.action_size)
-                    method_cov = epi_obs.record_manager.get_method_coverage(tx.contract)
-                    valid_action = policy.valid_action[tx.contract]
-                    for j, action in enumerate(valid_action):
-                        if len(valid_action[action]) > 0:
-                            for method in valid_action[action]:
-                                action_cov[j] += method_cov[method]['block_cov']/len(valid_action[action])
-                        else:
-                            action_cov[j] = 1
-                            
-                    print("method_cov: ", method_cov)
-                    
-                    action_cov = action_cov.mean()
-                    new_insn_coverage, new_block_coverage = epi_obs.stat.get_coverage(tx.contract)
-                    
-                reward_of_bug = 0
-                for bug in epi_obs.stat.update_bug:
-                    if bug in ['Suicidal', 'Leaking', 'Reentrancy']:
-                        reward_of_bug = 1
-                        
-                if new_cov_reward == 0: 
-                    new_cov_reward = -1
-                    
-                reward_f = 0
-                if step == self.max_episode:
-                    reward_f = 0.7 * reward_of_bug + (0.3) * action_cov
-                reward_a = 0.7 * reward_of_bug + (0.3) * new_cov_reward
-                
-                policy.agent.store_transition(state, action, reward_f, step*episode)
-                if len(arg_actions[0]) > 0:
-                    policy.int_agent.store_transition(state, arg_actions[0][0], reward_a, step*episode)
-                if len(arg_actions[1]) > 0:
-                    policy.uint_agent.store_transition(state, arg_actions[1][0], reward_a, step*episode)
-                if len(arg_actions[2]) > 0:
-                    policy.bool_agent.store_transition(state, arg_actions[2][0], reward_a, step*episode)
-                if len(arg_actions[3]) > 0:
-                    policy.addr_agent.store_transition(state, arg_actions[3][0], reward_a, step*episode)
-                if len(arg_actions[4]) > 0:
-                    policy.byte_agent.store_transition(state, arg_actions[4][0], reward_a, step*episode)
-                    
-                state = next_state
-                episode_reward += reward_f
-                    
-            if args.mode == 'train':
-                # policy.agent.buffer.print_info()
-                policy.agent.learn()
-                policy.int_agent.learn()
-                policy.uint_agent.learn()
-                policy.bool_agent.learn()
-                policy.addr_agent.learn()
-                # policy.byte_agent.learn()
-                # exit(1)
-                episole = init_episole - 0.6 * (step*episode - self.start_train)/(self.limit*50 - self.start_train)
-                
-                
-            for bug in obs.stat.to_json()[args.contract]['bugs']:
-                if bug not in result['bug_finder']:
-                    result['bug_finder'][bug] = dict()
-                for func in obs.stat.to_json()[args.contract]['bugs'][bug]:
-                    if func not in result['bug_finder'][bug]:
-                        result['bug_finder'][bug][func] = time.time()
+            if i % self.max_episode == 0:
+                reward_f = bug_rate * reward_of_bug + (1-bug_rate) * action_cov
+                obs.stat.update_bug = dict()
 
+            policy.agent.store_transition(state, action, reward_f,i)
+            if len(arg_actions[0]) > 0:
+                policy.int_agent.store_transition(state, arg_actions[0][0], reward_a, i)
+            if len(arg_actions[1]) > 0:
+                policy.uint_agent.store_transition(state, arg_actions[1][0], reward_a, i)
+            if len(arg_actions[2]) > 0:
+                policy.bool_agent.store_transition(state, arg_actions[2][0], reward_a, i)
+            if len(arg_actions[3]) > 0:
+                policy.addr_agent.store_transition(state, arg_actions[3][0], reward_a, i)
+            if len(arg_actions[4]) > 0:
+                policy.byte_agent.store_transition(state, arg_actions[4][0], reward_a, i)
+            state = next_state
+            episode_reward_f += reward_f
+            episode_reward_a += reward_a
+
+
+            # print(f'iteration: {i}, reward_f: {reward_f}, reward_a: {reward_a}')
+            # LOG.info(obs.stat)
+
+            if i % 100 == 0:
+                for bug in obs.stat.to_json()[args.contract]['bugs']:
+                    if bug not in result['bug_finder']:
+                        result['bug_finder'][bug] = dict()
+                    for func in obs.stat.to_json()[args.contract]['bugs'][bug]:
+                        if func not in result['bug_finder'][bug]:
+                            result['bug_finder'][bug][func] = time.time()
+
+            if i % self.max_episode == 0 and i <= 2000:
                 result['txs_loop'].append((time.time(),obs.stat.to_json()))
-                    
-                if time.time() - start_time >= args.limit_time:
-                    break
+
+            if i % self.max_episode == 0 and elapsed_time < self.limit:
+                reward_f_values.append(episode_reward_f)
+                reward_a_values.append(episode_reward_a)
+                iterations.append(i/self.max_episode)
+
+                policy.reset()
+                policy.reset_dqn_state()
+                episode_reward_f = 0
+                episode_reward_a = 0
+                hiddens = [None, None, None, None, None, None]
+                obs.stat.reset_coverage()
+                if args.mode == 'train':
+                    policy.agent.buffer.create_new_epi()
+                    policy.int_agent.buffer.create_new_epi()
+                    policy.uint_agent.buffer.create_new_epi()
+                    policy.bool_agent.buffer.create_new_epi()
+                    policy.addr_agent.buffer.create_new_epi()
+                    policy.byte_agent.buffer.create_new_epi()
+                if i >= self.start_train:
+                    if args.mode == 'train':
+                        policy.agent.learn()
+                        policy.int_agent.learn()
+                        policy.uint_agent.learn()
+                        policy.bool_agent.learn()
+                        policy.addr_agent.learn()
+                        # policy.byte_agent.learn()
+                        episole = init_episole - 0.6 * (i - self.start_train)/(self.limit - self.start_train)
+            i += 1
+            elapsed_time = time.time() - start_time
+            print(f'elapsed_time: {elapsed_time}')
+
+            if time.time() - start_time >= args.limit_time:
+                break
+
+        plt.figure(figsize=(12, 6))
+        plt.plot(iterations, reward_f_values, label='Reward F')
+        plt.plot(iterations, reward_a_values, label='Reward A')
+        plt.xlabel('Episodes')
+        plt.ylabel('Reward')
+        plt.title('Reward Progression')
+        plt.legend()
+        plt.grid(True)
+        os.makedirs(f'result/{args.contract}', exist_ok=True)
+        plt.savefig(f'result/{args.contract}/drqn_reward_plot.png')
+        plt.close()
         
         if args.mode == 'train':
             policy.agent.save(args.rl_model)
+            # policy.int_agent.save(args.rl_model)
+            # policy.uint_agent.save(args.rl_model)
+            # policy.bool_agent.save(args.rl_model)
+            # policy.addr_agent.save(args.rl_model)
+            # policy.byte_agent.save(args.rl_model)
         # print(f'total rewoard:{total_reward}')
         # print(policy.action_trace)
         # print(policy.action_count_array)
         LOG.info(obs.stat)
+        with open(f'result/{args.contract}/drqn_result.json', 'w') as f:
+            f.write(json.dumps(obs.stat.to_json()))
+        
         # print(policy.epi_iter)
         return result
-                
-                
+    
 
+    def MADFuzz_ppo_discrete(self, policy, obs, start_time, args):
+        if len(policy.contract_manager.fuzz_contract_names) != 1:
+            print('please input only one contract to fuzz')
+            return
+        bug_rate = args.bug_rate
+
+        result = dict()
+        result['max_episode'] = self.max_episode
+        count_dict = dict()
+        count_dict['action'] = dict()
+        count_dict['method'] = dict()
+        print('fuzz_loop_RL')
+        obs.init()
+
+        LOG.info(obs.stat)
+        LOG.info('initial calls start')
+        self.init_txs(policy, obs, result)
+        LOG.info('initial calls end')
+
+        init_limit = 0
+        LOG.info('start reinforcement policy')
+        result['txs_loop'] = []
+        result['bug_finder'] = dict()
+
+        random.seed(self.seed)
+        torch.manual_seed(self.seed)
+        np.random.seed(self.seed)
+
+        state, x_method, contract = policy.compute_state(obs)
+        hidden = None
+        init_episole = 0.7
+
+        if args.mode == 'test':
+            episole = 0.15
+        else:
+            episole = init_episole
+        
+        hiddens = [None, None, None, None, None, None]
+
+        episode_reward_f = 0
+        episode_reward_a = 0
+        reward_f_values = []
+        reward_a_values = []
+        iterations = []
+        start_time = time.time()
+        i = 1
+        elapsed_time = 0
+
+        while elapsed_time < self.limit:
+            print("step: ", i)
+            if i % 1000 == 0:
+                for contract_name in policy.contract_manager.fuzz_contract_names:
+                    contract = policy.contract_manager[contract_name]
+                    policy.execution.set_balance(contract.addresses[0], 10 ** 29)
+
+            if i % self.max_episode < self.max_episode/10:
+                tx, action, new_hiddens, arg_actions = policy.select_tx(state, x_method, contract, obs, hiddens=hiddens, frandom=False, episole=1)
+            else:
+                tx, action, new_hiddens, arg_actions = policy.select_tx(state, x_method, contract, obs, hiddens=hiddens, frandom=False, episole=episole)
+                
+            for j, new_hidden in enumerate(new_hiddens):
+                if new_hidden is not None:
+                    hiddens[j] = new_hidden
+
+            if tx is None:
+                break
+            next_state, new_cov_reward, done, x_method, contract = policy.step(tx, obs)
+
+            reward_f = 0
+
+            action_cov = np.zeros(policy.action_size)
+            method_cov = obs.record_manager.get_method_coverage(tx.contract)
+            valid_action = policy.valid_action[tx.contract]
+            for j, action in enumerate(valid_action):
+                if len(valid_action[action]) > 0:
+                    for method in valid_action[action]:
+                        action_cov[j] += method_cov[method]['block_cov']/len(valid_action[action])
+                else:
+                    action_cov[j] = 1
+
+            action_cov = action_cov.mean()
+            new_insn_coverage, new_block_coverage = obs.stat.get_coverage(tx.contract)
+            reward_of_bug = 0
+            for bug in obs.stat.update_bug:
+                if bug in ['Suicidal', 'Leaking', 'Reentrancy']:
+                    reward_of_bug = 1
+
+            if new_cov_reward == 0:
+                new_cov_reward = -1
+            reward_a = 0.7 * reward_of_bug + (0.3) * new_cov_reward
+
+            if i % self.max_episode == 0:
+                reward_f = bug_rate * reward_of_bug + (1-bug_rate) * action_cov
+                obs.stat.update_bug = dict()
+
+            policy.agent.store_transition(state, action, reward_f,i)
+            if len(arg_actions[0]) > 0:
+                policy.int_agent.buffer.rewards.append(reward_a)
+                policy.int_agent.buffer.is_terminals.append(False)
+            if len(arg_actions[1]) > 0:
+                policy.uint_agent.buffer.rewards.append(reward_a)
+                policy.uint_agent.buffer.is_terminals.append(False)
+            if len(arg_actions[2]) > 0:
+                policy.bool_agent.store_transition(state, arg_actions[2][0], reward_a, i)
+            if len(arg_actions[3]) > 0:
+                policy.addr_agent.store_transition(state, arg_actions[3][0], reward_a, i)
+            if len(arg_actions[4]) > 0:
+                policy.byte_agent.store_transition(state, arg_actions[4][0], reward_a, i)
+            state = next_state
+            episode_reward_f += reward_f
+            episode_reward_a += reward_a
+
+            # LOG.info(obs.stat)
+
+            if i % 100 == 0:
+                for bug in obs.stat.to_json()[args.contract]['bugs']:
+                    if bug not in result['bug_finder']:
+                        result['bug_finder'][bug] = dict()
+                    for func in obs.stat.to_json()[args.contract]['bugs'][bug]:
+                        if func not in result['bug_finder'][bug]:
+                            result['bug_finder'][bug][func] = time.time()
+
+            if i % self.max_episode == 0 and i <= 2000:
+                result['txs_loop'].append((time.time(),obs.stat.to_json()))
+
+            if i % self.max_episode == 0 and elapsed_time < self.limit:
+                reward_f_values.append(episode_reward_f)
+                reward_a_values.append(episode_reward_a)
+                iterations.append(i/self.max_episode)    
+                policy.reset()
+                policy.reset_dqn_state()
+                episode_reward_f = 0
+                episode_reward_a = 0
+                hiddens = [None, None, None, None, None, None]
+                obs.stat.reset_coverage()
+                if args.mode == 'train':
+                    policy.agent.buffer.create_new_epi()
+                    policy.bool_agent.buffer.create_new_epi()
+                    policy.addr_agent.buffer.create_new_epi()
+                    policy.byte_agent.buffer.create_new_epi()
+                if i >= self.start_train:
+                    if args.mode == 'train':
+                        policy.agent.learn()
+                        policy.int_agent.update()
+                        policy.uint_agent.update()
+                        policy.bool_agent.learn()
+                        policy.addr_agent.learn()
+                        # policy.byte_agent.learn()
+                        episole = init_episole - 0.6 * (i - self.start_train)/(self.limit - self.start_train)
+
+            if time.time() - start_time >= args.limit_time:
+                break
+
+            i += 1
+            elapsed_time = time.time() - start_time
+            print(f'elapsed_time: {elapsed_time}')
+        
+        if args.mode == 'train':
+            policy.agent.save(args.rl_model)
+            # policy.int_agent.save(args.rl_model)
+            # policy.uint_agent.save(args.rl_model)
+            # policy.bool_agent.save(args.rl_model)
+            # policy.addr_agent.save(args.rl_model)
+            # policy.byte_agent.save(args.rl_model)
+        
+        os.makedirs(f'result/{args.contract}', exist_ok=True)
+        LOG.info(obs.stat)
+        with open(f'result/{args.contract}/ppo_discrete_result.json', 'w') as f:
+            f.write(json.dumps(obs.stat.to_json()))
+
+        plt.figure(figsize=(12, 6))
+        plt.plot(iterations, reward_f_values, label='Reward F')
+        plt.plot(iterations, reward_a_values, label='Reward A')
+        plt.xlabel('Episodes')
+        plt.ylabel('Reward')
+        plt.title('Reward Progression')
+        plt.legend()
+        plt.grid(True)
+        
+        plt.savefig(f'result/{args.contract}/ppo_discrete_reward_plot.png')
+        plt.close()
+        # print(policy.epi_iter)
+        return result
+    
+    def MADFuzz_ppo_continuous(self, policy, obs, start_time, args):
+        if len(policy.contract_manager.fuzz_contract_names) != 1:
+            print('please input only one contract to fuzz')
+            return
+        bug_rate = args.bug_rate
+
+        result = dict()
+        result['max_episode'] = self.max_episode
+        count_dict = dict()
+        count_dict['action'] = dict()
+        count_dict['method'] = dict()
+        print('fuzz_loop_RL')
+        obs.init()
+
+        LOG.info(obs.stat)
+        LOG.info('initial calls start')
+        self.init_txs(policy, obs, result)
+        LOG.info('initial calls end')
+
+        init_limit = 0
+        LOG.info('start reinforcement policy')
+        result['txs_loop'] = []
+        result['bug_finder'] = dict()
+
+        random.seed(self.seed)
+        torch.manual_seed(self.seed)
+        np.random.seed(self.seed)
+
+        episode_reward = 0
+
+        state, x_method, contract = policy.compute_state(obs)
+        hidden = None
+        init_episole = 0.7
+
+        if args.mode == 'test':
+            episole = 0.15
+        else:
+            episole = init_episole
+        
+        hiddens = [None, None, None, None, None, None]
+
+        episode_reward_f = 0
+        episode_reward_a = 0
+        reward_f_values = []
+        reward_a_values = []
+        iterations = []
+        start_time = time.time()
+        i = 1
+        elapsed_time = 0
+
+        while elapsed_time < self.limit:
+            print("step: ", i)
+            if i % 1000 == 0:
+                for contract_name in policy.contract_manager.fuzz_contract_names:
+                    contract = policy.contract_manager[contract_name]
+                    policy.execution.set_balance(contract.addresses[0], 10 ** 29)
+
+            if i % self.max_episode < self.max_episode/10:
+                tx, action, new_hiddens, arg_actions = policy.select_tx(state, x_method, contract, obs, hiddens=hiddens, frandom=False, episole=1)
+            else:
+                tx, action, new_hiddens, arg_actions = policy.select_tx(state, x_method, contract, obs, hiddens=hiddens, frandom=False, episole=episole)
+                
+            for j, new_hidden in enumerate(new_hiddens):
+                if new_hidden is not None:
+                    hiddens[j] = new_hidden
+
+            if tx is None:
+                break
+            next_state, new_cov_reward, done, x_method, contract = policy.step(tx, obs)
+
+            reward_f = 0
+
+            action_cov = np.zeros(policy.action_size)
+            method_cov = obs.record_manager.get_method_coverage(tx.contract)
+            valid_action = policy.valid_action[tx.contract]
+            for j, action in enumerate(valid_action):
+                if len(valid_action[action]) > 0:
+                    for method in valid_action[action]:
+                        action_cov[j] += method_cov[method]['block_cov']/len(valid_action[action])
+                else:
+                    action_cov[j] = 1
+
+            action_cov = action_cov.mean()
+            new_insn_coverage, new_block_coverage = obs.stat.get_coverage(tx.contract)
+            reward_of_bug = 0
+            for bug in obs.stat.update_bug:
+                if bug in ['Suicidal', 'Leaking', 'Reentrancy']:
+                    reward_of_bug = 1
+            if new_cov_reward == 0:
+                new_cov_reward = -1
+            reward_a = 0.7 * reward_of_bug + (0.3) * new_cov_reward
+
+            if i % self.max_episode == 0:
+                reward_f = bug_rate * reward_of_bug + (1-bug_rate) * action_cov
+                obs.stat.update_bug = dict()
+
+            policy.agent.store_transition(state, action, reward_f,i)
+            if len(arg_actions[0]) > 0:
+                policy.int_agent.buffer.rewards.append(reward_a)
+                policy.int_agent.buffer.is_terminals.append(False)
+            if len(arg_actions[1]) > 0:
+                policy.uint_agent.buffer.rewards.append(reward_a)
+                policy.uint_agent.buffer.is_terminals.append(False)
+            if len(arg_actions[2]) > 0:
+                policy.bool_agent.store_transition(state, arg_actions[2][0], reward_a, i)
+            if len(arg_actions[3]) > 0:
+                policy.addr_agent.store_transition(state, arg_actions[3][0], reward_a, i)
+            if len(arg_actions[4]) > 0:
+                policy.byte_agent.store_transition(state, arg_actions[4][0], reward_a, i)
+            state = next_state
+            episode_reward_f += reward_f
+            episode_reward_a += reward_a
+            # LOG.info(obs.stat)
+
+            if i % 100 == 0:
+                for bug in obs.stat.to_json()[args.contract]['bugs']:
+                    if bug not in result['bug_finder']:
+                        result['bug_finder'][bug] = dict()
+                    for func in obs.stat.to_json()[args.contract]['bugs'][bug]:
+                        if func not in result['bug_finder'][bug]:
+                            result['bug_finder'][bug][func] = time.time()
+
+            if i % self.max_episode == 0 and i <= 2000:
+                result['txs_loop'].append((time.time(),obs.stat.to_json()))
+
+            if i % self.max_episode == 0 and elapsed_time < self.limit:
+                reward_f_values.append(episode_reward_f)
+                reward_a_values.append(episode_reward_a)
+                iterations.append(i/self.max_episode) 
+                policy.reset()
+                policy.reset_dqn_state()
+                episode_reward_f = 0
+                episode_reward_a = 0
+                hiddens = [None, None, None, None, None, None]
+                obs.stat.reset_coverage()
+                if args.mode == 'train':
+                    policy.agent.buffer.create_new_epi()
+                    policy.bool_agent.buffer.create_new_epi()
+                    policy.addr_agent.buffer.create_new_epi()
+                    policy.byte_agent.buffer.create_new_epi()
+                if i >= self.start_train:
+                    if args.mode == 'train':
+                        policy.agent.learn()
+                        policy.int_agent.update()
+                        policy.uint_agent.update()
+                        policy.bool_agent.learn()
+                        policy.addr_agent.learn()
+                        # policy.byte_agent.learn()
+                        episole = init_episole - 0.6 * (i - self.start_train)/(self.limit - self.start_train)
+
+            i += 1
+            elapsed_time = time.time() - start_time
+            print(f'elapsed_time: {elapsed_time}')
+
+            if time.time() - start_time >= args.limit_time:
+                break
+        
+        if args.mode == 'train':
+            policy.agent.save(args.rl_model)
+            # policy.int_agent.save(args.rl_model)
+            # policy.uint_agent.save(args.rl_model)
+            # policy.bool_agent.save(args.rl_model)
+            # policy.addr_agent.save(args.rl_model)
+            # policy.byte_agent.save(args.rl_model)
+        # print(f'total rewoard:{total_reward}')
+        # print(policy.action_trace)
+        # print(policy.action_count_array)
+        os.makedirs(f'result/{args.contract}', exist_ok=True)
+        LOG.info(obs.stat)
+        with open(f'result/{args.contract}/ppo_continuous_result.json', 'w') as f:
+            f.write(json.dumps(obs.stat.to_json()))
+
+        plt.figure(figsize=(12, 6))
+        plt.plot(iterations, reward_f_values, label='Reward F')
+        plt.plot(iterations, reward_a_values, label='Reward A')
+        plt.xlabel('Episodes')
+        plt.ylabel('Reward')
+        plt.title('Reward Progression')
+        plt.legend()
+        plt.grid(True)
+        
+        plt.savefig(f'result/{args.contract}/ppo_continuous_reward_plot.png')
+        plt.close()
+
+        # print(policy.epi_iter)
+        return result
+
+    def MADFuzz_sac(self, policy, obs, start_time, args):
+        if len(policy.contract_manager.fuzz_contract_names) != 1:
+            print('please input only one contract to fuzz')
+            return
+        bug_rate = args.bug_rate
+
+        result = dict()
+        result['max_episode'] = self.max_episode
+        count_dict = dict()
+        count_dict['action'] = dict()
+        count_dict['method'] = dict()
+        print('fuzz_loop_RL')
+        obs.init()
+
+        LOG.info(obs.stat)
+        LOG.info('initial calls start')
+        self.init_txs(policy, obs, result)
+        LOG.info('initial calls end')
+
+        init_limit = 0
+        LOG.info('start reinforcement policy')
+        result['txs_loop'] = []
+        result['bug_finder'] = dict()
+
+        random.seed(self.seed)
+        torch.manual_seed(self.seed)
+        np.random.seed(self.seed)
+
+        episode_reward = 0
+
+        state, x_method, contract = policy.compute_state(obs)
+        hidden = None
+        init_episole = 0.7
+
+        if args.mode == 'test':
+            episole = 0.15
+        else:
+            episole = init_episole
+        
+        hiddens = [None, None, None, None, None, None]
+
+        episode_reward_f = 0
+        episode_reward_a = 0
+        reward_f_values = []
+        reward_a_values = []
+        iterations = []
+        start_time = time.time()
+        i = 1
+        elapsed_time = 0
+
+        while elapsed_time < self.limit:
+            print("step: ", i)
+            if i % 1000 == 0:
+                for contract_name in policy.contract_manager.fuzz_contract_names:
+                    contract = policy.contract_manager[contract_name]
+                    policy.execution.set_balance(contract.addresses[0], 10 ** 29)
+
+            if i % self.max_episode < self.max_episode/10:
+                tx, action, new_hiddens, arg_actions = policy.select_tx(state, x_method, contract, obs, hiddens=hiddens, frandom=False, episole=1)
+            else:
+                tx, action, new_hiddens, arg_actions = policy.select_tx(state, x_method, contract, obs, hiddens=hiddens, frandom=False, episole=episole)
+                
+            for j, new_hidden in enumerate(new_hiddens):
+                if new_hidden is not None:
+                    hiddens[j] = new_hidden
+
+            if tx is None:
+                break
+            next_state, new_cov_reward, done, x_method, contract = policy.step(tx, obs)
+
+            reward_f = 0
+
+            action_cov = np.zeros(policy.action_size)
+            method_cov = obs.record_manager.get_method_coverage(tx.contract)
+            valid_action = policy.valid_action[tx.contract]
+            for j, action in enumerate(valid_action):
+                if len(valid_action[action]) > 0:
+                    for method in valid_action[action]:
+                        action_cov[j] += method_cov[method]['block_cov']/len(valid_action[action])
+                else:
+                    action_cov[j] = 1
+
+            action_cov = action_cov.mean()
+            new_insn_coverage, new_block_coverage = obs.stat.get_coverage(tx.contract)
+            reward_of_bug = 0
+            for bug in obs.stat.update_bug:
+                if bug in ['Suicidal', 'Leaking', 'Reentrancy']:
+                    reward_of_bug = 1
+
+            if new_cov_reward == 0:
+                new_cov_reward = -1
+            reward_a = 0.7 * reward_of_bug + (0.3) * new_cov_reward
+
+            if i % self.max_episode == 0:
+                reward_f = bug_rate * reward_of_bug + (1-bug_rate) * action_cov
+                obs.stat.update_bug = dict()
+
+            policy.agent.store_transition(state, action, reward_f,i)
+            if len(arg_actions[0]) > 0:
+                policy.int_agent.store(state, reward_a, False, action, next_state)
+            if len(arg_actions[1]) > 0:
+                policy.uint_agent.store(state, reward_a, False, action, next_state)
+            if len(arg_actions[2]) > 0:
+                policy.bool_agent.store_transition(state, arg_actions[2][0], reward_a, i)
+            if len(arg_actions[3]) > 0:
+                policy.addr_agent.store_transition(state, arg_actions[3][0], reward_a, i)
+            if len(arg_actions[4]) > 0:
+                policy.byte_agent.store_transition(state, arg_actions[4][0], reward_a, i)
+            state = next_state
+            episode_reward_f += reward_f
+            episode_reward_a += reward_a
+            # LOG.info(obs.stat)
+
+            if i % 100 == 0:
+                for bug in obs.stat.to_json()[args.contract]['bugs']:
+                    if bug not in result['bug_finder']:
+                        result['bug_finder'][bug] = dict()
+                    for func in obs.stat.to_json()[args.contract]['bugs'][bug]:
+                        if func not in result['bug_finder'][bug]:
+                            result['bug_finder'][bug][func] = time.time()
+
+            if i % self.max_episode == 0 and i <= 2000:
+                result['txs_loop'].append((time.time(),obs.stat.to_json()))
+
+            if i % self.max_episode == 0 and elapsed_time < self.limit:
+                reward_f_values.append(episode_reward_f)
+                reward_a_values.append(episode_reward_a)
+                iterations.append(i/self.max_episode) 
+                policy.reset()
+                policy.reset_dqn_state()
+                episode_reward_f = 0
+                episode_reward_a = 0
+                hiddens = [None, None, None, None, None, None]
+                obs.stat.reset_coverage()
+                if args.mode == 'train':
+                    policy.agent.buffer.create_new_epi()
+                    policy.bool_agent.buffer.create_new_epi()
+                    policy.addr_agent.buffer.create_new_epi()
+                    policy.byte_agent.buffer.create_new_epi()
+                if i >= self.start_train:
+                    if args.mode == 'train':
+                        policy.agent.learn()
+                        policy.int_agent.train()
+                        policy.uint_agent.train()
+                        policy.bool_agent.learn()
+                        policy.addr_agent.learn()
+                        # policy.byte_agent.learn()
+                        episole = init_episole - 0.6 * (i - self.start_train)/(self.limit - self.start_train)
+
+            if time.time() - start_time >= args.limit_time:
+                break
+
+            i += 1
+            elapsed_time = time.time() - start_time
+            print(f'elapsed_time: {elapsed_time}')
+        
+        if args.mode == 'train':
+            policy.agent.save(args.rl_model)
+            # policy.int_agent.save(args.rl_model)
+            # policy.uint_agent.save(args.rl_model)
+            # policy.bool_agent.save(args.rl_model)
+            # policy.addr_agent.save(args.rl_model)
+            # policy.byte_agent.save(args.rl_model)
+        # print(f'total rewoard:{total_reward}')
+        # print(policy.action_trace)
+        # print(policy.action_count_array)
+        LOG.info(obs.stat)
+        os.makedirs(f'result/{args.contract}', exist_ok=True)
+        with open(f'result/{args.contract}/sac_result.json', 'w') as f:
+            f.write(json.dumps(obs.stat.to_json()))
+
+        plt.figure(figsize=(12, 6))
+        plt.plot(iterations, reward_f_values, label='Reward F')
+        plt.plot(iterations, reward_a_values, label='Reward A')
+        plt.xlabel('Episodes')
+        plt.ylabel('Reward')
+        plt.title('Reward Progression')
+        plt.legend()
+        plt.grid(True)
+        
+        plt.savefig(f'result/{args.contract}/sac_reward_plot.png')
+        plt.close()
+        # print(policy.epi_iter)
+        return result
 
     def fuzz_loop_RL(self, policy, obs, start_time, args):
         if len(policy.contract_manager.fuzz_contract_names) != 1:

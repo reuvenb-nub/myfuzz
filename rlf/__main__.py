@@ -9,9 +9,11 @@ import time
 from .fuzzers import Environment
 from .fuzzers.random import PolicyRandom, ObsRandom
 from .fuzzers.F_random import PolicyFRandom, ObsFRandom
-from .fuzzers.reinforcement import PolicyReinforcement, ObsReinforcement
+from .fuzzers.reinforcement import PolicyReinforcementDRQN, ObsReinforcement
+from .fuzzers.reinforcement import PolicyReinforcementPPODiscrete, PolicyReinforcementPPOContinuous, PolicyReinforcementSAC
 from .execution import Execution
 from .common import set_logging
+from .fuzzers.reinforcement.ultis import str2bool
 
 import json
 
@@ -23,11 +25,10 @@ def get_args():
     parser.add_argument('--contract', dest='contract', type=str, default=None) # the contract to test
     parser.add_argument('--limit', dest='limit', type=int, default=100)
     # parser.add_argument('--limit_time', dest='limit_time', type=int, default=60)
-    parser.add_argument('--fuzzer', dest='fuzzer', choices=['random', 'frandom', 'reinforcement'], default='random') # the mode of fuzzer symbolic=training
+    parser.add_argument('--fuzzer', dest='fuzzer', choices=['random', 'frandom', 'reinforcement_drqn', 'reinforcement_ppo_discrete', 'reinforcement_ppo_continuous', 'reinforcement_sac'], default='random') # the mode of fuzzer symbolic=training
 
     parser.add_argument('--model', dest='model', type=str, default='model_imitation') # the model used to fuzz
 
-    parser.add_argument('--seed', dest='seed', type=int, default=1)
     parser.add_argument('--log_to_file', dest='log_to_file', type=str, default=None)
     parser.add_argument('-v', dest='v', type=int, default=1, metavar='LOG_LEVEL',
                         help='Log levels: 0 - NOTSET, 1 - INFO, 2 - DEBUG, 3 - ERROR')
@@ -44,6 +45,27 @@ def get_args():
     parser.add_argument('--bug_rate', dest='bug_rate', type=float, default=0.5)
     parser.add_argument('--detect_bugs', dest='detect_bugs', choices=['all','ls'], default=None)
     parser.add_argument('--limit_time', dest='limit_time', type=int, default=1800)
+
+    parser.add_argument('--dvc', type=str, default='cpu', help='running device: cuda or cpu')
+    parser.add_argument('--EnvIdex', type=int, default=0, help='PV1, Lch_Cv2, Humanv4, HCv4, BWv3, BWHv3')
+    parser.add_argument('--write', type=str2bool, default=False, help='Use SummaryWriter to record the training')
+    parser.add_argument('--render', type=str2bool, default=False, help='Render or Not')
+    parser.add_argument('--Loadmodel', type=str2bool, default=False, help='Load pretrained model or Not')
+    parser.add_argument('--ModelIdex', type=int, default=100, help='which model to load')
+
+    parser.add_argument('--seed', type=int, default=0, help='random seed')
+    parser.add_argument('--Max_train_steps', type=int, default=int(5e6), help='Max training steps')
+    parser.add_argument('--save_interval', type=int, default=int(100e3), help='Model saving interval, in steps.')
+    parser.add_argument('--eval_interval', type=int, default=int(2.5e3), help='Model evaluating interval, in steps.')
+    parser.add_argument('--update_every', type=int, default=50, help='Training Fraquency, in stpes')
+
+    parser.add_argument('--gamma', type=float, default=0.99, help='Discounted Factor')
+    parser.add_argument('--net_width', type=int, default=256, help='Hidden net width, s_dim-400-300-a_dim')
+    parser.add_argument('--a_lr', type=float, default=3e-4, help='Learning rate of actor')
+    parser.add_argument('--c_lr', type=float, default=3e-4, help='Learning rate of critic')
+    parser.add_argument('--batch_size', type=int, default=256, help='batch_size of training')
+    parser.add_argument('--alpha', type=float, default=0.12, help='Entropy coefficient')
+    parser.add_argument('--adaptive_alpha', type=str2bool, default=True, help='Use adaptive_alpha or Not')
     args = parser.parse_args()
     return args
 
@@ -99,6 +121,8 @@ def main():
     #     # contract.abi.dump(address=args.address, path='built')
     # return
 
+    args.state_dim = 110 + 5
+
     if args.fuzzer == 'random':
         print('fuzzer random')
         policy = PolicyRandom(execution, contract_manager, account_manager)
@@ -107,18 +131,51 @@ def main():
         print('fuzzer frandom')
         policy = PolicyFRandom(execution, contract_manager, account_manager)
         obs = ObsFRandom(contract_manager, account_manager, args.dataset_dump_path)
-    elif args.fuzzer == 'reinforcement':
-        policy = PolicyReinforcement(execution, contract_manager, account_manager, args)
+    elif args.fuzzer == 'reinforcement_drqn':
+        policy = PolicyReinforcementDRQN(execution, contract_manager, account_manager, args)
         # input('stop')
         if args.mode == 'train': #args.train_dir is not None:
             # policy.start_train()
             print('train mode')
         policy.load_model()
         obs = ObsReinforcement(contract_manager, account_manager, args.dataset_dump_path)
+    elif args.fuzzer == 'reinforcement_ppo_discrete':
+        policy = PolicyReinforcementPPODiscrete(execution, contract_manager, account_manager, args)
+        # input('stop')
+        if args.mode == 'train': #args.train_dir is not None:
+            # policy.start_train()
+            print('train mode')
+        policy.load_model()
+        obs = ObsReinforcement(contract_manager, account_manager, args.dataset_dump_path)
+    elif args.fuzzer == 'reinforcement_ppo_continuous':
+        policy = PolicyReinforcementPPOContinuous(execution, contract_manager, account_manager, args)
+        # input('stop')
+        if args.mode == 'train':
+            # policy.start_train()
+            print('train mode')
+        policy.load_model()
+        obs = ObsReinforcement(contract_manager, account_manager, args.dataset_dump_path)
+
+    elif args.fuzzer == 'reinforcement_sac':
+        policy = PolicyReinforcementSAC(execution, contract_manager, account_manager, args)
+        # input('stop')
+        if args.mode == 'train':
+            # policy.start_train()
+            print('train mode')
+        policy.load_model()
+        obs = ObsReinforcement(contract_manager, account_manager, args.dataset_dump_path)
+
+
 
     environment = Environment(args.limit, args.seed, args.max_episode, start_time)
-    if args.fuzzer == 'reinforcement':
-        result = environment.MADFuzz_run(policy, obs, start_time, args)
+    if args.fuzzer == 'reinforcement_drqn':
+        result = environment.MADFuzz_drqn(policy, obs, start_time, args)
+    elif args.fuzzer == 'reinforcement_ppo_discrete':
+        result = environment.MADFuzz_ppo_discrete(policy, obs, start_time, args)
+    elif args.fuzzer == 'reinforcement_ppo_continuous':
+        result = environment.MADFuzz_ppo_continuous(policy, obs, start_time, args)
+    elif args.fuzzer == 'reinforcement_sac':
+        result = environment.MADFuzz_sac(policy, obs, start_time, args)
     else:
         result = environment.fuzz_loop(policy, obs)
 

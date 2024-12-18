@@ -1,2 +1,5 @@
 from .obs_reinforcement import ObsReinforcement
-from .policy_reinforcement import PolicyReinforcement
+from .policy_reinforcement_drqn import PolicyReinforcementDRQN
+from .policy_reinforcement_ppo_d import PolicyReinforcementPPODiscrete
+from .policy_reinforcement_ppo_c import PolicyReinforcementPPOContinuous
+from .policy_reinforcement_sac import PolicyReinforcementSAC
